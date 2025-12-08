@@ -1,23 +1,15 @@
-' Reads a whole text file and returns an array of trimmed lines.
-' Returns invalid if the file can't be read.
 function readLines() as object
-    path = "pkg:/source/input"
+    path = "pkg:/source/input"  ' or whatever you're using
 
     content = ReadAsciiFile(path)
-    if content = invalid then
-        return invalid
-    end if
+    if content = invalid then return invalid
 
-    ' Normalize CRLF -> LF
     content = content.Replace(chr(13), "")
-
-    ' Split on LF into an array
     lines = content.Split(chr(10))
 
-    ' Trim whitespace per line (optional but nice)
-    for i = 0 to lines.count() - 1
-        lines[i] = lines[i].Trim()
-    end for
+    if lines.count() > 0 and lines[lines.count() - 1] = "" then
+        lines.pop()
+    end if
 
     return lines
 end function
@@ -117,5 +109,51 @@ function BigSub(a as string, b as string) as string
     end while
 
     return BigNormalize(out)
+end function
+
+function BigMulDigit(a as string, d as integer) as string
+    a = BigNormalize(a)
+    if d <= 0 or a = "0" then return "0"
+
+    i = len(a)
+    carry = 0
+    out = ""
+
+    while i > 0 or carry > 0
+        da = 0
+        if i > 0 then da = val(mid(a, i, 1))
+
+        s = da * d + carry
+        digit = s mod 10
+        carry = s \ 10
+
+        out = chr(48 + digit) + out
+        i = i - 1
+    end while
+
+    return BigNormalize(out)
+end function
+
+function BigMul(a as string, b as string) as string
+    a = BigNormalize(a)
+    b = BigNormalize(b)
+
+    if a = "0" or b = "0" then return "0"
+
+    result$ = "0"
+    zeros$ = ""
+
+    i = len(b)
+    while i > 0
+        d = val(mid(b, i, 1))
+        if d <> 0 then
+            part$ = BigMulDigit(a, d) + zeros$
+            result$ = BigAdd(result$, part$)
+        end if
+        zeros$ = zeros$ + "0"
+        i = i - 1
+    end while
+
+    return BigNormalize(result$)
 end function
 
