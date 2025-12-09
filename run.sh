@@ -2,13 +2,18 @@
 set -euo pipefail
 # set -x  # uncomment for debug
 
-# Usage: ./run.sh [-s] 01 part1
+# Usage: ./run.sh [-s] [-r] 01 part1
 USE_SAMPLE=false
+USE_ROKU=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -s|--sample)
       USE_SAMPLE=true
+      shift
+      ;;
+    -r|--roku)
+      USE_ROKU=true
       shift
       ;;
     *)
@@ -21,9 +26,11 @@ FOLDER="${1:-}"
 PART="${2:-}"
 
 if [[ -z "$FOLDER" || -z "$PART" ]]; then
-  echo "Usage: $0 [-s|--sample] <folder> <part>"
+  echo "Usage: $0 [-s|--sample] [-r|--roku] <folder> <part>"
   echo "Example: $0 01 part1"
-  echo "         $0 -s 01 part1  # use input.sample"
+  echo "         $0 -s 01 part1      # use input.sample"
+  echo "         $0 -r 01 part1      # deploy to real Roku"
+  echo "         $0 -s -r 01 part1   # sample input on real Roku"
   exit 1
 fi
 
@@ -44,10 +51,27 @@ MANIFEST_FILE="common/manifest"
 [[ -f "$UTILS_FILE" ]]    || { echo "Missing utils file: $UTILS_FILE"; exit 1; }
 [[ -f "$MANIFEST_FILE" ]] || { echo "Missing manifest file: $MANIFEST_FILE"; exit 1; }
 
-# Make sure brs-cli exists
-if ! command -v brs-cli >/dev/null 2>&1; then
-  echo "ERROR: brs-cli not found in PATH"
-  exit 1
+# Check dependencies based on mode
+if [[ "$USE_ROKU" == true ]]; then
+  ENV_FILE="$SCRIPT_DIR/.env"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "ERROR: .env file not found. Create one with ROKU_IP and ROKU_PASSWORD"
+    echo "Example:"
+    echo "  ROKU_IP=192.168.1.100"
+    echo "  ROKU_PASSWORD=your_dev_password"
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  if [[ -z "${ROKU_IP:-}" || -z "${ROKU_PASSWORD:-}" ]]; then
+    echo "ERROR: ROKU_IP and ROKU_PASSWORD must be set in .env"
+    exit 1
+  fi
+else
+  if ! command -v brs-cli >/dev/null 2>&1; then
+    echo "ERROR: brs-cli not found in PATH"
+    exit 1
+  fi
 fi
 
 WORKDIR="$(mktemp -d)"
@@ -105,8 +129,56 @@ ZIPFILE="$(mktemp -u /tmp/brs-package-XXXXXX).zip"
 
 echo "Created zip at: $ZIPFILE"
 
-time brs-cli "$ZIPFILE"
+if [[ "$USE_ROKU" == true ]]; then
+  echo "Deploying to Roku at $ROKU_IP..."
 
-rm -f "$ZIPFILE"
+  # Open telnet connection FIRST in the main shell
+  exec 3<>/dev/tcp/"$ROKU_IP"/8085
+  echo "Connected to debug console..."
+
+  # Start background reader that processes the telnet output
+  # Only look for exit AFTER we see our app compiling
+  (
+    SEEN_COMPILE=false
+    while IFS= read -r -t 120 line <&3; do
+      echo "$line"
+      # Wait for our specific app to start compiling
+      if [[ "$SEEN_COMPILE" == false && "$line" == *"[scrpt.cmpl] Compiling '$TITLE'"* ]]; then
+        SEEN_COMPILE=true
+      fi
+      # Only look for exit after we've seen our app compile
+      if [[ "$SEEN_COMPILE" == true && "$line" == *"bs.ndk.proc.exit"* ]]; then
+        break
+      fi
+    done
+  ) &
+  READER_PID=$!
+
+  # Now upload the package (telnet is already connected and reading)
+  response=$(curl -s -w "%{http_code}" -o /dev/null --digest -u "rokudev:$ROKU_PASSWORD" \
+    -F "mysubmit=Install" \
+    -F "archive=@$ZIPFILE" \
+    "http://$ROKU_IP/plugin_install")
+
+  rm -f "$ZIPFILE"
+
+  if [[ "$response" -ne 200 ]]; then
+    echo "Error: Roku responded with code $response"
+    kill "$READER_PID" 2>/dev/null || true
+    exec 3<&-
+    exit 1
+  fi
+
+  echo "Installation successful! Waiting for app to finish..."
+
+  # Wait for reader to see the exit marker
+  wait "$READER_PID" || true
+  exec 3<&-
+  echo "Debug console closed."
+else
+  time brs-cli "$ZIPFILE"
+  rm -f "$ZIPFILE"
+fi
+
 echo "Done."
 
