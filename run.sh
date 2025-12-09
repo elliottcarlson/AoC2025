@@ -2,13 +2,28 @@
 set -euo pipefail
 # set -x  # uncomment for debug
 
-# Usage: ./run.sh 01 part1
+# Usage: ./run.sh [-s] 01 part1
+USE_SAMPLE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -s|--sample)
+      USE_SAMPLE=true
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 FOLDER="${1:-}"
 PART="${2:-}"
 
 if [[ -z "$FOLDER" || -z "$PART" ]]; then
-  echo "Usage: $0 <folder> <part>"
+  echo "Usage: $0 [-s|--sample] <folder> <part>"
   echo "Example: $0 01 part1"
+  echo "         $0 -s 01 part1  # use input.sample"
   exit 1
 fi
 
@@ -16,7 +31,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PART_FILE="${FOLDER}/${PART}.brs"
-INPUT_PATH="${FOLDER}/input"
+if [[ "$USE_SAMPLE" == true ]]; then
+  INPUT_PATH="${FOLDER}/input.sample"
+else
+  INPUT_PATH="${FOLDER}/input"
+fi
 UTILS_FILE="common/utils.brs"
 MANIFEST_FILE="common/manifest"
 
@@ -31,12 +50,6 @@ if ! command -v brs-cli >/dev/null 2>&1; then
   exit 1
 fi
 
-# Make sure zip exists
-if ! command -v zip >/dev/null 2>&1; then
-  echo "ERROR: zip command not found. Install it with: sudo apt install zip"
-  exit 1
-fi
-
 WORKDIR="$(mktemp -d)"
 cleanup() {
   rm -rf "$WORKDIR"
@@ -45,21 +58,31 @@ trap cleanup EXIT
 
 mkdir -p "$WORKDIR/source"
 
+# Build dynamic title
+DAY_NUM=$((10#${FOLDER}))  # Strip leading zero: "01" -> "1"
+PART_NUM="${PART#part}"    # Extract number from "part1" -> "1"
+TITLE="Advent of Code 2025 - Day ${DAY_NUM}, Part ${PART_NUM}"
+if [[ "$USE_SAMPLE" == true ]]; then
+  TITLE="${TITLE} (Sample Input)"
+fi
+
 # Core files
 cp "$PART_FILE"     "$WORKDIR/source/main.brs"
 cp "$UTILS_FILE"    "$WORKDIR/source/utils.brs"
 cp -r "$INPUT_PATH" "$WORKDIR/source/input"
-cp "$MANIFEST_FILE" "$WORKDIR/manifest"
+
+# Generate manifest with dynamic title
+sed "s/^title=.*/title=${TITLE}/" "$MANIFEST_FILE" > "$WORKDIR/manifest"
 
 # Include any extra files from the FOLDER (e.g. bigint.brs),
 # excluding:
-#   - input
+#   - input and input.sample
 #   - all part*.brs files
 for path in "$FOLDER"/*; do
   base="$(basename "$path")"
 
-  # Skip the input file/dir
-  if [[ "$base" == "$(basename "$INPUT_PATH")" ]]; then
+  # Skip the input files
+  if [[ "$base" == "input" || "$base" == "input.sample" ]]; then
     continue
   fi
 
